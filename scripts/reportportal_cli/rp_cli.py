@@ -15,6 +15,7 @@ import yaml
 from packaging import version as pkg_version
 from reportportal_client import ReportPortalServiceAsync, ReportPortalService
 from reportportal_client.service import uri_join
+from collections import OrderedDict
 
 # default log file name
 LOG_FILE_NAME = 'rp_cli.log'
@@ -421,11 +422,15 @@ class RpManager:
             description=self.launch_description,
             tags=self.launch_tags
         )
+        print("self.launch_tags")
+        print("======launch_tags========")
         self._wait_tasks_to_finish()
         parent_launch = self.service.find_launch_version(
             launch_name=self.launch_name,
             version=self.strategy.get_version(tags=self.launch_tags)
         )
+        print(parent_launch)
+        print("======parent_launch========")
         if parent_launch:
             return parent_launch.get("id", "")
         return ""
@@ -465,9 +470,11 @@ class RpManager:
         version = self.strategy.get_version(tags=self.launch_tags)
         launch = self.service.find_launch_version(launch_name=self.launch_name, version=version)
         if launch:
+            print("=======in launch====")
             self.launch_id = self._process_launch(launch=launch)
 
         if not self.launch_id:
+            print("=======in not launch====")
             self.launch_id = self._start_launch()
 
         assert self.launch_id, "Fail to create launch '{name}'".format(name=self.launch_name)
@@ -708,11 +715,19 @@ class RpManager:
 
     def feed_results(self):
         self._init_launch()
-
+        resulting_xunit = OrderedDict()
         with open(self.xunit_feed) as fd:
             data = xmltodict.parse(fd.read())
-
-        xml = data.get("testsuite").get("testcase")
+        # data = data['testsuites']
+	print("***printing data***********")
+        # print(data)
+        # print(data['testsuites'])
+        # print("###########3")
+        # print(data['testsuites']['testsuite'])
+        xml = data.get("testsuites").get("testsuite").get("testcase")
+        # resulting_xunit['testsuite']['testcase'] += data['testsuite']['testcase']
+        # xml = resulting_xunit.get("testsuite").get("testcase")
+        # xml = data['testsuites']['testsuite']['testcase']
 
         # if there is only 1 test case, convert 'xml' from dict to list
         # otherwise, 'xml' is always list
@@ -1047,6 +1062,8 @@ class ReportPortalServiceAsyncRH(ReportPortalServiceAsync):
             )
             logger.error("Launches for '{launch}' are: {launches}".format(launch=launch_name, launches=launches))
             launches = [launch for launch in launches if launch["status"].strip() == IN_PROGRESS]
+        print("===hello==")
+        print(launches)
         return launches[-1] if launches else dict()
 
     def get_shared_filters(self):

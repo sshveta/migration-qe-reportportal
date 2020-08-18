@@ -1,11 +1,4 @@
-
-rp_endpoint: 
-rp_uuid: 
-rp_project: RHV_DEMO
-
-
-# These will be filled dynamically in ge-runner.sh
-#launch_name: RHV-$VERSION-$TAG_EXPRESSION
-#launch_description: $BUILD_URL $OVIRT_BUILD_INFO_NAME $TAG_EXPRESSION
-#launch_tags: rhv-$VERSION $OVIRT_BUILD_INFO_NAME $TAG_EXPRESSION $GE_NAME $WEBUI_JOB
+rp_endpoint: https://reportportal-migration-qe.cloud.paas.psi.redhat.com
+rp_uuid: 2c07188c-8ee2-47e4-b951-5cf80ea46a5f
+rp_project: migration-engineering
 

@@ -36,7 +36,7 @@ rp_out_file="$WORKSPACE/rp_cli.json"
 
 export REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 python $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/rp_cli.py \
-        --config $WORKSPACE/rhevm-qe-infra/scripts/reportportal_cli/rp_conf.yaml \
+        --config $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/rp_conf.yaml \
         --xunit_feed "$WORKSPACE/xunit_output.xml" \
         --launch_name "$rp_launch" \
         --launch_description "$rp_launch_description" \
@@ -45,4 +45,5 @@ python $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/rp_cli.py \
         --strategy "$strategy" \
         --zipped \
         --store_out_file "$rp_out_file"
+
 # end of to-report-portal.sh
