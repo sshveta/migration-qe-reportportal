@@ -29,7 +29,7 @@ LOG_LEVELS = {
     }
 
 DEFAULT_LOG_LEVEL = "info"
-STRATEGIES = ["Rhv", "Raut", "Cfme"]
+STRATEGIES = ["Mtv", "Migration", "MA"]
 DEFAULT_OUT_FILE = "rp_cli.json"
 
 logger = logging.getLogger("rp_cli.py")
@@ -100,7 +100,7 @@ class Strategy():
         pass
 
 
-class Rhv(Strategy):
+class Migration(Strategy):
 
     def __init__(self):
         self.current_team = None
@@ -194,30 +194,30 @@ class Rhv(Strategy):
 
     def get_version(self, tags):
         """
-        Extract the RHV version from the given tags
+        Extract the Build version from the given tags
 
         Args:
             tags (list): List of strings that send through the CLI "--launch_tags"
 
         Returns:
-            str: RHV version ("rhv-x.y.z-n") if version was found, empty string otherwise
+            str: Build version ("mta-x.y.z") if version was found, empty string otherwise
         """
         for tag in tags:
-            if re.findall(r"rhv-\d.\d+\.\d+\-\d+", tag):
+            if re.findall(r"mta-\d.\d.\d", tag):
                 return tag
         return ""
 
     def get_version_number(self, version_tag=None):
         """
-        Convert version format from "rhv-1.2.3-10" to "1.2.3.10"
+        Convert version format from "mta-5.0.1" to "5.0.1"
         So it can be compared
 
         Args:
-            version_tag (str): Product version include letters and numbers e.g.: rhv-1.2.3-4
+            version_tag (str): Product version include letters and numbers e.g.: mta-5.0.1
                 if given then it will be translated to number, else read from the init tag
 
         Returns:
-            str: Version formatted as: 1.2.3.4
+            str: Version formatted as: 5.0.1
         """
         if not version_tag:
             version_tag = self.get_version(tags=self.launch_tags)
@@ -227,7 +227,7 @@ class Rhv(Strategy):
         """
         Split the given launch_name (pass through CLI) to launch name and team name
 
-        launch_name by CLI examples: "RHV-4.3-tier2-network", "RHV-4.3-tier2-sla-virt"
+        launch_name by CLI examples: "MTA-5.0.1"
 
         Args:
             launch_name_cli (str): Launch name as given through CLI
@@ -236,7 +236,7 @@ class Rhv(Strategy):
         Returns:
             tuple: (launch name, team name) if team is a valid team name, ("", "") if not
         """
-        result = re.findall(r"(RHV-\d.\d-tier\d)\-?([a-z\-]+)?", launch_name_cli)
+        result = re.findall(r"(MTA-\d.\d.\d)\-?([a-z\-]+)?", launch_name_cli)
         if result and len(result) == 1:
             return result[0][0], result[0][1]
         return "", ""
@@ -245,14 +245,14 @@ class Rhv(Strategy):
         """
         Returns the expected latest filter name at the Report Portal
         """
-        version = self.get_version(tags=tags)  # e.g.: "rhv-4.4.1-5"
+        version = self.get_version(tags=tags)  # e.g.: "mta-5.0.1"
         major, minor, _ = tuple(version.split("-")[1].split("."))  # ['4', '4', '1']
-        return "RHV {major}.{minor} latest".format(major=major, minor=minor)
+        return "Migration {major}.{minor} latest".format(major=major, minor=minor)
 
-# END: Class Rhv
+# END: Class Migration
 
 
-class Raut(Rhv):
+class Mtv(Migration):
 
     def get_logs_per_test_path(self, case):
         name = self.get_testcase_name(case)
@@ -271,10 +271,10 @@ class Raut(Rhv):
 
     def should_create_folders_in_launch(self):
         return False
-# END: Class Raut
+# END: Class Mtv
 
 
-class Cfme(Rhv):
+class MA(Migration):
 
     # These properties will be attached as a simple (not key:value pair) tag to each test case
     properties_to_parse = ['rhv_tier']
@@ -422,15 +422,11 @@ class RpManager:
             description=self.launch_description,
             tags=self.launch_tags
         )
-        print("self.launch_tags")
-        print("======launch_tags========")
         self._wait_tasks_to_finish()
         parent_launch = self.service.find_launch_version(
             launch_name=self.launch_name,
             version=self.strategy.get_version(tags=self.launch_tags)
         )
-        print(parent_launch)
-        print("======parent_launch========")
         if parent_launch:
             return parent_launch.get("id", "")
         return ""
@@ -470,11 +466,9 @@ class RpManager:
         version = self.strategy.get_version(tags=self.launch_tags)
         launch = self.service.find_launch_version(launch_name=self.launch_name, version=version)
         if launch:
-            print("=======in launch====")
             self.launch_id = self._process_launch(launch=launch)
 
         if not self.launch_id:
-            print("=======in not launch====")
             self.launch_id = self._start_launch()
 
         assert self.launch_id, "Fail to create launch '{name}'".format(name=self.launch_name)
@@ -715,20 +709,9 @@ class RpManager:
 
     def feed_results(self):
         self._init_launch()
-        resulting_xunit = OrderedDict()
         with open(self.xunit_feed) as fd:
             data = xmltodict.parse(fd.read())
-        # data = data['testsuites']
-	print("***printing data***********")
-        # print(data)
-        # print(data['testsuites'])
-        # print("###########3")
-        # print(data['testsuites']['testsuite'])
         xml = data.get("testsuites").get("testsuite").get("testcase")
-        # resulting_xunit['testsuite']['testcase'] += data['testsuite']['testcase']
-        # xml = resulting_xunit.get("testsuite").get("testcase")
-        # xml = data['testsuites']['testsuite']['testcase']
-
         # if there is only 1 test case, convert 'xml' from dict to list
         # otherwise, 'xml' is always list
         if not isinstance(xml, list):
@@ -909,7 +892,7 @@ class ReportPortalServiceRH(ReportPortalService):
         Get lunches information
 
         Args:
-            launch_name (str): Launch name, e.g.:  e.g.: 'RHV-4.3-tier1', 'RHV-4.2-tier2', 'RHV-4.3-tier3'
+            launch_name (str): Launch name, e.g.:  e.g.: 'MTA-5.0.1'
 
         Returns:
              list: of dictionaries include details of latest lunches
@@ -1011,7 +994,7 @@ class ReportPortalServiceAsyncRH(ReportPortalServiceAsync):
         Return all launches information for the given launch_name
 
         Args:
-            launch_name (str): Launch name e.g.: 'RHV-4.3-tier1', 'RHV-4.2-tier2', 'RHV-4.3-tier3'
+            launch_name (str): Launch name e.g.: 'MTA-5.0.1'
             keys (list): The dict keys name to return, if empty return all keys
 
         Returns:
@@ -1048,8 +1031,8 @@ class ReportPortalServiceAsyncRH(ReportPortalServiceAsync):
         Find the launch that include the given version
 
         Args:
-            launch_name (str): Launch name e.g.: 'RHV-4.3-tier1', 'RHV-4.2-tier2', 'RHV-4.3-tier3'
-            version (str): Product version e.g.: 'rhv-4.3.5-10'
+            launch_name (str): Launch name e.g.: 'MTA-5.0.1'
+            version (str): Product version e.g.: 'mta-5.0.1'
 
         Return:
             dict: Launch details if launch exists, empty dict otherwise
@@ -1062,8 +1045,6 @@ class ReportPortalServiceAsyncRH(ReportPortalServiceAsync):
             )
             logger.error("Launches for '{launch}' are: {launches}".format(launch=launch_name, launches=launches))
             launches = [launch for launch in launches if launch["status"].strip() == IN_PROGRESS]
-        print("===hello==")
-        print(launches)
         return launches[-1] if launches else dict()
 
     def get_shared_filters(self):
@@ -1145,12 +1126,12 @@ if __name__ == "__main__":
     elif args.xunit_feed:
         if not args.strategy:
             rp_parser.error('You must specify --strategy if you use --xunit-feed.')
-        if args.strategy == 'Rhv':
-            rp = RpManager(config_data, strategy=Rhv())
-        elif args.strategy == 'Raut':
-            rp = RpManager(config_data, strategy=Raut())
-        elif args.strategy == 'Cfme':
-            rp = RpManager(config_data, strategy=Cfme())
+        if args.strategy == 'Mtv':
+            rp = RpManager(config_data, strategy=Mtv())
+        elif args.strategy == 'Migration':
+            rp = RpManager(config_data, strategy=Migration())
+        elif args.strategy == 'MA':
+            rp = RpManager(config_data, strategy=MA())
         rp.feed_results()
     else:
         logger.error("Bad command - see the usage!")
