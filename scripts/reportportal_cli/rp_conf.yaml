@@ -1,4 +1,4 @@
-rp_endpoint: https://reportportal-migration-qe.cloud.paas.psi.redhat.com
-rp_uuid: 2c07188c-8ee2-47e4-b951-5cf80ea46a5f
-rp_project: migration-engineering
+rp_endpoint: 
+rp_uuid: 
+rp_project: 
 
