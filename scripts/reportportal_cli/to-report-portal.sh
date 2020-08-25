@@ -30,10 +30,8 @@ source $RP_VENV/bin/activate
 pip install -U pip
 pip install jinja2
 pip install -r $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/requirements.txt
-export RP_ENDPOINT="$RP_ENDPOINT"
-export RP_UUID="$RP_UUID"
 rp_out_file="$WORKSPACE/rp_cli.json"
-# [[ -e "$rp_out_file" ]] && rm -f "$rp_out_file"
+[[ -e "$rp_out_file" ]] && rm -f "$rp_out_file"
 
 export REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 python $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/rp_cli.py \
