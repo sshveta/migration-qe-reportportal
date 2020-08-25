@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-echo "Executed from shell-scripts/create_rp_envt_variables.sh"
+# Execute this script from post build task section of jenkins
+# Plugins required in Jenkins are
+# 1) Hudson Post build plugin
+# 2) Multiple SCM
+# 3) Docker Plugin
+echo "Executed from scripts/reportportal_cli/create_rp_envt_variables.sh"
 
-# Create Virtual env for RP and source it 
+# Create Virtual env for RP and source it
 # ========================================
 export RP_VENV="rp"
 rm -rf $RP_VENV
@@ -13,9 +18,10 @@ pip install -r $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/requiremen
 
 # Settings for Report Portal
 # =============================
-rp_launch="MTA-$VERSION-$launch_name"
-rp_launch_description="$TEXT_BUILD_DESCRIPTION-$VERSION-$launch_name"
-rp_launch_tags="MTA-$VERSION-$launch_name"
+launch_name="MTA-5.0.1"
+rp_launch="MTA-5.0.1"
+rp_launch_description="Description-$launch_name"
+rp_launch_tags="mta-5.0.1"
 rp_out_file="$WORKSPACE/rp_cli.json"
 logs_path=$WORKSPACE/logs_per_test
 strategy="Migration"
@@ -41,7 +47,12 @@ export rp_launch_tags
 export logs_path
 export strategy
 
+# Write parameters in rp_conf.yaml
+#====================
+sed -i "s,^rp_endpoint.\\+$,rp_endpoint: ${RP_ENDPOINT}," $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/rp_conf.yaml
+sed -i "s/^rp_uuid.\\+$/rp_uuid: ${RP_UUID}/" $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/rp_conf.yaml
+sed -i "s/^rp_project.\\+$/rp_project: ${RP_PROJECT}/" $WORKSPACE/migration-qe-infra/scripts/reportportal_cli/rp_conf.yaml
+
 #-- Do the export to the Report portal
 sh "$WORKSPACE/migration-qe-infra/scripts/reportportal_cli/to-report-portal.sh"
-# end of create_rp_envt_variables.sh
-
+# end of create_rp_envt_variables.s
