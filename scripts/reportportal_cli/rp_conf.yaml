@@ -1,6 +1,5 @@
 echo "**********************"
 
-rp_endpoint: $RP_ENDPOINT
-rp_uuid:  $RP_UUID
-rp_project: $RP_PROJECT
-echo $rp_endpoint
+rp_endpoint: 
+rp_uuid:  
+rp_project: 
