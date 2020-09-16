@@ -25,7 +25,7 @@ echo "Executed from migration-qe-infra/scripts/reportportal_cli/to-report-portal
 #-- upload results to RP
 export RP_VENV="rp"
 rm -rf $RP_VENV
-virtualenv $RP_VENV
+python3 -m venv $RP_VENV
 source $RP_VENV/bin/activate
 pip install -U pip
 pip install jinja2
