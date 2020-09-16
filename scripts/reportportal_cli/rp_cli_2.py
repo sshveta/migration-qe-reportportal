@@ -1,24 +1,21 @@
-#!/usr/bin/env python3
-
-import sys
 import argparse
-import logging
-import yaml
-import requests
 import json
-import datetime
+import logging
+import os
+import shutil
+import sys
 import time
 import traceback
-import glob
-import os
-import xmltodict
-import shutil
-from collections import OrderedDict
+import re
 from mimetypes import guess_type
 
-from reportportal_client import ReportPortalServiceAsync
-import urllib3
-urllib3.disable_warnings()
+import requests
+import xmltodict
+import yaml
+from packaging import version as pkg_version
+from reportportal_client import ReportPortalServiceAsync, ReportPortalService
+from reportportal_client.service import uri_join
+from collections import OrderedDict
 
 # default log file name
 LOG_FILE_NAME = 'rp_cli.log'
@@ -35,11 +32,13 @@ DEFAULT_LOG_LEVEL = "info"
 STRATEGIES = ["Mtv", "Migration", "MA"]
 DEFAULT_OUT_FILE = "rp_cli.json"
 
-logger = logging.getLogger("rp_cli_2.py")
+logger = logging.getLogger("rp_cli.py")
 
-
-class InvalidCase(Exception):
-    pass
+# Waiting parameters for end of tasks
+WAIT = {"TRIES": 180, "TIMEOUT": 10, "START": 1, "STEP": 1}
+MAX_PAGE_SIZE = "10000"
+IN_PROGRESS = "IN_PROGRESS"
+IS_FIRST_RUN_STR = "is_first_run"
 
 
 def timestamp():
@@ -85,22 +84,19 @@ class Strategy():
     def get_testcase_name(self, case):
         pass
 
-    def get_testcase_start_time(self, case):
-        pass
-
-    def get_testcase_finish_time(self, case):
-        pass
-
-    def get_suite_start_time(self, suite):
-        pass
-
-    def get_suite_finish_time(self, suite):
-        pass
-
     def get_testcase_description(self, case):
         pass
 
     def get_logs_per_test_path(self,  case):
+        pass
+
+    def should_create_folders_in_launch(self):
+        return False
+
+    def create_folder(self, case):
+        pass
+
+    def is_first_folder(self):
         pass
 
 
@@ -128,9 +124,6 @@ class Migration(Strategy):
 
     def get_testcase_description(self, case):
         return "{tc_name} time: {case_time}".format(tc_name=case.get('@name'), case_time=case.get('@time'))
-
-    def _get_team_name(self, case):
-        return case.get('@classname').split('.')[1]
 
     def _get_properties(self, case):
         tags = list()
@@ -162,7 +155,7 @@ class Migration(Strategy):
     def get_tags(self, case, test_owners={}):
         tags = list()
         # extract team name
-        tags.append(self._get_team_name(case))
+        tags.append(self.get_team_dir_name(case))
         # extract properties like polarion id and bz
         tags.extend(self._get_properties(case))
         # add test owner name to test case according to test_owner.yaml file
@@ -172,15 +165,25 @@ class Migration(Strategy):
 
         return tags
 
-    def should_create_folders_in_launch(self):
-        return True
-
     def create_folder(self, case):
-        if self.current_team != self._get_team_name(case):
-            self.current_team = self._get_team_name(case)
+        if self.current_team != self.get_team_dir_name(case):
+            self.current_team = self.get_team_dir_name(case)
             return True, self.current_team
 
         return False, self.current_team
+
+    def get_team_dir_name(self, case):
+        """
+        Return the team directory name
+        "rhevmtests.<team dir name>.<test package>.<test module>.<test class>"
+
+        Args:
+            case (dict): One test as published by pytest xunit output file
+        """
+        return case.get('@classname').split('.')[1]
+
+    def should_create_folders_in_launch(self):
+        return True
 
     def is_first_folder(self):
         if self.first_folder:
@@ -340,16 +343,24 @@ class RpManager:
         )
         self.launch_id = ''
         self.xunit_feed = config.get('xunit_feed')
-        self.launch_name = config.get('launch_name', 'rp_cli-launch')
+        self.launch_name_cli = config.get('launch_name', 'rp_cli-launch')
+        self.all_teams = config.get('teams', {})
         self.strategy = strategy
-        self.service = ReportPortalServiceAsync(
-            endpoint=self.url, project=self.project, token=self.uuid, error_handler=self.strategy.my_error_handler,
-            verify_ssl=False, log_batch_size=1
+        self.service = ReportPortalServiceAsyncRH(
+            endpoint=self.url, project=self.project, token=self.uuid, error_handler=self.strategy.my_error_handler
         )
         self.test_logs = config.get('test_logs')
         self.zipped = config.get('zipped')
         self.test_owners = config.get('test_owners', {})
         self.strategy = strategy
+
+        self.launch_name, self.launch_teams = self.strategy.parse_launch_name(
+            launch_name_cli=self.launch_name_cli, teams=self.all_teams.keys()
+        )
+        if self.launch_teams:
+            self.launch_teams = [team for team in self.launch_teams.split("-") if self._is_valid_team(team=team)]
+        if not self.launch_teams:
+            self.launch_name = self.launch_name_cli
 
     @staticmethod
     def _check_return_code(req):
@@ -360,7 +371,7 @@ class RpManager:
     def _import_results(self):
         with open(self.upload_xunit, 'rb') as xunit_file:
             files = {'file': xunit_file}
-            req = requests.post(self.launch_url % "import", headers=self.import_headers, files=files, verify=False)
+            req = requests.post(self.launch_url % "import", headers=self.import_headers, files=files)
 
         response = req.json()
         self._check_return_code(req)
@@ -375,7 +386,7 @@ class RpManager:
         launch_id_url = self.launch_url % launch_id
         req = requests.get(launch_id_url, headers=self.update_headers)
         self._check_return_code(req)
-        logger.info('Launch have been created successfully')
+        logger.info('Launch has been created successfully')
         return True
 
     def _update_launch_description_and_tags(self, launch_id):
@@ -386,7 +397,7 @@ class RpManager:
             "tags": self.launch_tags
         }
 
-        req = requests.put(url=update_url, headers=self.update_headers, data=json.dumps(data))
+        req = requests.put(url=update_url, headers=self.update_headers, data=json.dumps(data), verify=False)
         self._check_return_code(req)
         logger.info(
             'Launch description %s and tags %s where updated for launch id %s',
@@ -399,15 +410,131 @@ class RpManager:
         self._update_launch_description_and_tags(self.launch_id)
 
     def _start_launch(self):
-        return self.service.start_launch(
-            name=self.launch_name, start_time=timestamp(), description=self.launch_description, tags=self.launch_tags)
+        """
+        Start new launch
+
+        Returns:
+            str: Launch ID if Start success, empty string otherwise
+        """
+        self.service.start_launch(
+            name=self.launch_name,
+            start_time=timestamp(),
+            description=self.launch_description,
+            tags=self.launch_tags
+        )
+        self._wait_tasks_to_finish()
+        parent_launch = self.service.find_launch_version(
+            launch_name=self.launch_name,
+            version=self.strategy.get_version(tags=self.launch_tags)
+        )
+        if parent_launch:
+            return parent_launch.get("id", "")
+        return ""
+
+    def _process_launch(self, launch=None):
+        """
+        Continue an existing launch
+
+        Args:
+            launch (str): Launch name
+
+        Returns:
+            str: Launch ID if success, empty string otherwise
+        """
+        version = self.strategy.get_version(tags=self.launch_tags)
+        if launch is None:
+            launch = self.service.find_launch_version(launch_name=self.launch_name, version=version)
+
+        if launch["status"].strip() != IN_PROGRESS:
+            logger.error(
+                "An existing launch ('{name} #{number}') that match the launching version '{ver}' was found, "
+                "but its state is not 'in-progress'".format(
+                    ver=version, name=launch["name"], number=launch["number"]
+                )
+            )
+            return ""
+        self.launch_tags += launch.get("tags")
+        self.launch_description = "\n".join([self.launch_description, launch.get("description")])
+        self._update_launch_description_and_tags(launch_id=launch.get("id"))
+        return launch.get("id")
+
+    def _init_launch(self):
+        """
+        Init current launch if exists or create new launch if it does not exits
+        """
+        self.launch_id = ""
+        version = self.strategy.get_version(tags=self.launch_tags)
+        launch = self.service.find_launch_version(launch_name=self.launch_name, version=version)
+        if launch:
+            self.launch_id = self._process_launch(launch=launch)
+
+        if not self.launch_id:
+            self.launch_id = self._start_launch()
+
+        assert self.launch_id, "Fail to create launch '{name}'".format(name=self.launch_name)
+        self.service.rp_client.launch_id = self.launch_id
+
+    def is_last_run(self):
+        """
+        Is this the last test run for current launch
+
+        It is the last run if:
+        1. Team name was not given, or
+        2. Team name was given and tags field include one entry for each team listed at the 'rp_conf.yaml'
+
+        Returns:
+            bool: True if this is the last run for current launch, False otherwise
+        """
+        if not self.launch_teams:
+            logger.info("is_last_run = true")
+            return True
+
+        for team in self.all_teams.keys():
+            if team not in self.launch_tags:
+                logger.info("is_last_run = False")
+                return False
+        logger.info("is_last_run = True")
+        return True
+
+    def is_first_run(self):
+        """
+        Is this the first test run for current launch
+
+        It is the first run if:
+        1. Team name was not given, or
+        2. Team name was given and tags field does not include any entry for team
+
+        Returns:
+            bool: True if this is the first run for current launch, False otherwise
+        """
+        if not self.launch_teams:
+            logger.info("No teams was entered, %s = True", IS_FIRST_RUN_STR)
+            return True
+
+        for team in self.all_teams.keys():
+            if team not in self.launch_teams and team in self.launch_tags:
+                logger.info("Found a team that already ran ('%s'), %s = False", team, IS_FIRST_RUN_STR)
+                return False
+        logger.info("%s = True", IS_FIRST_RUN_STR)
+        return True
+
+    def _wait_tasks_to_finish(self):
+        logger.info("Waiting for tasks to complete...")
+        max_tries = WAIT.get("START")
+        while self.service.queue.qsize() > 0 and max_tries < WAIT.get("TRIES"):
+            time.sleep(WAIT.get("TIMEOUT"))
+            max_tries += WAIT.get("STEP")
+        time.sleep(WAIT.get("TIMEOUT"))
+        logger.info("End waiting for tasks to complete")
 
     def _end_launch(self):
         self.service.finish_launch(end_time=timestamp())
         self.service.terminate()
         self.launch_id = self.service.rp_client.launch_id
+        logger.info("Ending launch '%s'", self.launch_id)
 
     def _upload_attachment(self, file, name):
+        logger.info("Uploading attachment file name: '%s' log file: '%s'", file, name)
         with open(file, "rb") as fh:
             attachment = {
                 "name": name,
@@ -438,7 +565,7 @@ class RpManager:
         else:
             logger.warning("There are no logs on the path (%s)!" % (whole_path, ))
 
-    def _log_message_to_rp_console(self, msg, level):
+    def _log_message_to_rp_console(self, msg, level="INFO"):
         self.service.log(
             time=timestamp(),
             message=msg,
@@ -446,14 +573,16 @@ class RpManager:
         )
 
     def _process_failed_case(self, case):
+        logger.info("Process failed case")
         msg = self.strategy.extract_failure_msg_from_xunit(case)
         self._log_message_to_rp_console(msg, "ERROR")
 
     def store_launch_info(self, dest):
+        logger.info("Store launch info to: '%s'", dest)
         launch_url = self.launch_public_url % self.launch_id
         json_data = {
             "rp_launch_url":  launch_url,
-            "rp_launch_name": self.launch_name,
+            "rp_launch_name": self.launch_name_cli,
             "rp_launch_tags": self.launch_tags,
             "rp_launch_desc": self.launch_description,
             "rp_launch_id":   self.launch_id
@@ -462,6 +591,7 @@ class RpManager:
             json.dump(json_data, file)
 
     def attach_logs_to_failed_case(self, case):
+        logger.info("Attach logs to failed case")
         path_to_logs_per_test = self.strategy.get_logs_per_test_path(case)
 
         if self.zipped:
@@ -472,6 +602,7 @@ class RpManager:
             self.upload_test_case_attachments("{0}/{1}".format(self.test_logs, path_to_logs_per_test))
 
     def _open_new_folder(self, folder_name):
+        logger.info("Open new folder: '%s'", folder_name)
         self.service.start_test_item(
             name=folder_name,
             start_time=timestamp(),
@@ -479,16 +610,108 @@ class RpManager:
         )
 
     def _close_folder(self):
+        logger.info("Closing folder")
         self.service.finish_test_item(end_time=timestamp(), status=None)
 
-    def feed_results(self):
-        self._start_launch()
+    def _is_valid_team(self, team):
+        """
+        Is given team team is listed at the config file
 
+        Args:
+             team (str): Team name
+
+        Returns:
+            bool: True if given team name is listed at the config file, False otherwise
+        """
+        if team in self.all_teams.keys():
+            logger.info("Team '%s' is valid", team)
+            return True
+
+        logger.error("Team '%s' is not valid", team)
+        return False
+
+    def is_team_test(self, case):
+        """
+        If given test case belongs to the current launching team
+
+        Args:
+            case (dict): One test as published by pytest xunit output file
+
+        Returns:
+            bool: True if given case belong to current launched team, False otherwise
+        """
+        # Eliminate if the team name was not given, e.g.: tier1
+        if not self.launch_teams:
+            return True
+
+        for team_name in self.launch_teams:
+            for dir_ in self.all_teams.get(team_name, []):
+                if dir_ in self.strategy.get_team_dir_name(case=case):
+                    return True
+            return False
+
+    def update_latest_filter(self):
+        """
+        Update an existing filter name
+
+        Returns:
+            bool: True if update success, False otherwise
+        """
+        if not self.is_old_filter_version():
+            logger.info("Latest filter version is newer, will not be updated!")
+            return False
+
+        filter_name = self.strategy.get_latest_filter_name(tags=self.launch_tags)
+        if filter_name:
+            ver = self.strategy.get_version(tags=self.launch_tags)
+            filter_data = {
+                "type": "launch",
+                "entities": [
+                    {
+                        "filtering_field": "tags",
+                        "condition": "in",
+                        "value": "{ver}".format(ver=ver)
+                      }
+                ]
+            }
+            response = self.service.update_shared_filter_by_name(filter_name=filter_name, filter_data=filter_data)
+            if response and response.status_code == 200:
+                logger.info(
+                    "Filter '{filter_name}' was successfully updated with latest version '{ver}'".format(
+                        filter_name=filter_name, ver=ver)
+                )
+            else:
+                logger.error("Fail to update filter '{filter_name}'".format(filter_name=filter_name))
+                return False
+        else:
+            logger.error("Can't update filter: '%s', filter does not exist!", filter_name)
+            return False
+        return True
+
+    def is_old_filter_version(self):
+        """
+        Returns True if filter version need to be updated, False otherwise
+        """
+        filter_name = self.strategy.get_latest_filter_name(tags=self.launch_tags)
+        if filter_name:
+            flt = self.service.get_filter_by_name(filter_name=filter_name)
+            if flt:
+                entities = flt.get('entities')
+                if entities and len(entities) == 1:
+                    filter_ver = entities[0].get('value')
+                    filter_ver = self.strategy.get_version_number(version_tag=filter_ver)
+                    product_ver = self.strategy.get_version_number(
+                        version_tag=self.strategy.get_version(tags=self.launch_tags)
+                    )
+                    logger.info("Product version is: '%s' latest filter version is: '%s'", filter_ver, product_ver)
+                    return pkg_version.parse(product_ver) > pkg_version.parse(filter_ver)
+        return False
+
+    def feed_results(self):
+        self._init_launch()
         with open(self.xunit_feed) as fd:
             data = xmltodict.parse(fd.read())
         xml = data.get("testsuites").get("testsuite").get("testcase")
-        # xml = data.get("testsuite").get("testcase")
-
         # if there is only 1 test case, convert 'xml' from dict to list
         # otherwise, 'xml' is always list
         if not isinstance(xml, list):
@@ -497,10 +720,19 @@ class RpManager:
         xml = sorted(xml, key=lambda k: k['@classname'])
 
         for case in xml:
+            # Handle pytest issue that collects tests not belonging to the delivered marked team-name
+            if not self.is_team_test(case=case):
+                continue
+
             issue = None
             name = self.strategy.get_testcase_name(case)
+            logger.info("=== Starting case name: '%s' ===", name)
+
             description = self.strategy.get_testcase_description(case)
+            logger.info("Case description: '%s'", description)
+
             tags = self.strategy.get_tags(case, test_owners=self.test_owners)
+            logger.info("Case tags: '%s'", tags)
 
             if self.strategy.should_create_folders_in_launch():
                 open_new_folder, folder_name = self.strategy.create_folder(case)
@@ -511,6 +743,7 @@ class RpManager:
                     self._close_folder()
                     self._open_new_folder(folder_name)
 
+            logger.info("--- Start test item: '%s' ---", name[:255])
             self.service.start_test_item(
                 name=name[:255],
                 description=description,
@@ -518,17 +751,15 @@ class RpManager:
                 start_time=timestamp(),
                 item_type="STEP",
             )
+
             # Create text log message with INFO level.
             if case.get('system_out'):
                 self._log_message_to_rp_console(case.get('system_out'), "INFO")
 
-            if 'skipped' in case:
+            if case.get('skipped'):
                 issue = {"issue_type": "NOT_ISSUE"}  # this will cause skipped test to not be "To Investigate"
                 status = 'SKIPPED'
-                if case.get('skipped'):
-                    self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
-                else:
-                    self._log_message_to_rp_console('No skip message is provided', "DEBUG")
+                self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
             elif case.get('failure') or case.get('error'):  # Error or failed cases
                 status = 'FAILED'
                 self._process_failed_case(case)
@@ -537,19 +768,28 @@ class RpManager:
                     self.attach_logs_to_failed_case(case)
             else:
                 status = 'PASSED'
+
+            logger.info("Finish test item status: '%s', issue: '%s'", status, issue)
             self.service.finish_test_item(end_time=timestamp(), status=status, issue=issue)
 
         if self.strategy.should_create_folders_in_launch():
             self._close_folder()
 
         # Finish launch.
-        self._end_launch()
+        self._wait_tasks_to_finish()
+
+        if self.is_first_run():
+            self.update_latest_filter()
+
+        if self.is_last_run():
+            self._end_launch()
 # End class RpManager
 
 
 def parse_configuration_file(config):
     """
     Parses the configuration file.
+
     Returns: dictionary containing the configuration file data
     """
 
@@ -571,6 +811,7 @@ def parse_configuration_file(config):
 def parser():
     """
     Parses module arguments.
+
     Returns: A dictionary containing parsed arguments
     """
 
@@ -628,6 +869,245 @@ def parser():
                 default name (%s) is used.""" % (DEFAULT_OUT_FILE, ),
     )
     return rp_parser
+
+
+class ReportPortalServiceRH(ReportPortalService):
+    """
+    Service class with report portal event callbacks.
+
+    Args:
+        endpoint: endpoint of report portal service.
+        project: project name to use for launch names.
+        token: authorization token.
+        api_base: defaults to api/v1, can be changed to other version.
+    """
+    def __init__(self, endpoint, project, token, api_base="api/v1"):
+        super(ReportPortalServiceRH, self).__init__(
+            endpoint=endpoint, project=project, token=token, api_base=api_base
+        )
+        self.session.verify = False
+
+    def get_launches(self, launch_name):
+        """
+        Get lunches information
+
+        Args:
+            launch_name (str): Launch name, e.g.:  e.g.: 'MTA-5.0.1'
+
+        Returns:
+             list: of dictionaries include details of latest lunches
+        """
+        url = uri_join(
+            self.base_url, "launch?filter.eq.name={launch_name}&page.size={max_page_size}".format(
+                launch_name=launch_name, max_page_size=MAX_PAGE_SIZE
+            )
+        )
+        return self.session.get(url=url)
+
+    def get_shared_filters(self):
+        """
+        Returns list of shared filters
+
+        Returns:
+            requests.Response: Response structure send from server
+                Response.content includes list of shared filters
+        """
+        url = uri_join(self.base_url, "filter/shared")
+        return self.session.get(url=url)
+
+    def update_shared_filter(self, filter_id, filter_data):
+        """
+        Update an existing filter
+
+        Args:
+            filter_id (str): The filter ID to update
+            filter_data (dict): Dictionary to send to server, see example
+
+        Returns:
+            requests.Response: Response structure send from server
+
+        Example:
+            filter_data: {
+                "name": "string",
+                "description": "string",
+                "type": "string"
+                "is_link": true,
+                "share": true,
+
+                "entities": [
+                    {
+                        "condition": "string",
+                        "filtering_field": "string",
+                        "value": "string"
+                    }
+                  ],
+
+                "selection_parameters": {
+                    "orders": [
+                        {
+                            "is_asc": true,
+                            "sorting_column": "string"
+                        }
+                    ],
+                    "page_number": 0
+                },
+             }
+        """
+        url = uri_join(self.base_url, "filter/{filter_id}".format(filter_id=filter_id))
+        return self.session.put(url=url, json=filter_data)
+
+
+class ReportPortalServiceAsyncRH(ReportPortalServiceAsync):
+    """
+    Wrapper around service class to transparently provide async operations to agents.
+
+    Args:
+        endpoint: endpoint of report portal service.
+        project: project name to use for launch names.
+        token: authorization token.
+        api_base: defaults to api/v1, can be changed to other version.
+    """
+    def __init__(self, endpoint, project, token, api_base="api/v1", **kwargs):
+        super(ReportPortalServiceAsyncRH, self).__init__(
+            endpoint=endpoint, project=project, token=token, api_base=api_base, **kwargs
+        )
+        self.rp_client = ReportPortalServiceRH(endpoint, project, token, api_base)
+
+        # new wrapper methods should be added to this list
+        self.supported_methods += ["get_launches", "get_shared_filters", "update_shared_filter"]
+
+    def get_launches(self, launch_name):
+        """
+        Wrapper method for ReportPortalServiceRH.get_launches()
+
+        Returns:
+             list: of dictionaries include details of latest lunches
+        """
+        args_ = {
+            "launch_name": launch_name
+        }
+        logger.debug("Start get_launches")
+        return self.rp_client.get_launches(**args_)
+
+    def get_launches_info(self, launch_name, keys=[]):
+        """
+        Return all launches information for the given launch_name
+
+        Args:
+            launch_name (str): Launch name e.g.: 'MTA-5.0.1'
+            keys (list): The dict keys name to return, if empty return all keys
+
+        Returns:
+             list: List of dictionaries, each dict include launch information
+        """
+        launches = self.get_launches(launch_name=launch_name)
+
+        if not launches and launches.status_code != 200:
+            logger.error(
+                "Fail to get information for launch: '{name}', status code is: '{code}'".format(
+                    name=launch_name, code=launches.status_code
+                )
+            )
+            return list()
+
+        if launches.json()["page"]["totalPages"] > 1:
+            logger.error(
+                "Retrieve results include more then one page: '{pages}'".format(
+                    pages=launches.json()["page"]["totalPages"]
+                )
+            )
+            return list()
+
+        if keys:
+            ret = list()
+            for dic in launches.json()["content"]:
+                ret.append([{k: v} for k, v in dic.items() if k in keys][0])
+        else:
+            ret = launches.json()["content"]
+        return ret
+
+    def find_launch_version(self, launch_name, version):
+        """
+        Find the launch that include the given version
+
+        Args:
+            launch_name (str): Launch name e.g.: 'MTA-5.0.1'
+            version (str): Product version e.g.: 'mta-5.0.1'
+
+        Return:
+            dict: Launch details if launch exists, empty dict otherwise
+        """
+        launches = self.get_launches_info(launch_name=launch_name)
+        launches = [launch for launch in launches if version in launch["tags"]]
+        if len(launches) > 1:
+            logger.error("Found multiple launches for '{launch}' while only one is expected\n".format(
+                launch=launch_name)
+            )
+            logger.error("Launches for '{launch}' are: {launches}".format(launch=launch_name, launches=launches))
+            launches = [launch for launch in launches if launch["status"].strip() == IN_PROGRESS]
+        return launches[-1] if launches else dict()
+
+    def get_shared_filters(self):
+        """
+        Wrapper method for ReportPortalServiceRH.get_shared_filters()
+
+        Returns:
+            requests.Response: Response structure send from server
+                Response.content includes list of shared filters when each dict is a shared filter
+        """
+        logger.debug("Start get_shared_filters()")
+        return self.rp_client.get_shared_filters()
+
+    def update_shared_filter(self, filter_id, filter_data):
+        """
+        Wrapper method for ReportPortalServiceRH.update_shared_filters()
+
+        Returns:
+             requests.Response: Response structure send from server
+        """
+        logger.debug(
+            "Start update_shared_filters() filter_ID: {id}, json: {data}".format(id=filter_id, data=filter_data)
+        )
+        return self.rp_client.update_shared_filter(filter_id=filter_id, filter_data=filter_data)
+
+    def update_shared_filter_by_name(self, filter_name, filter_data):
+        """
+        Update the given shared filter name
+
+        Args:
+            filter_name (str): Filter name
+            filter_data (dict): New filter data to post
+
+        Returns:
+            requests.Response: Response structure send from server if update succeeded,
+                or None if filter does not exists
+        """
+        flt = self.get_filter_by_name(filter_name=filter_name)
+        if flt:
+            return self.update_shared_filter(filter_id=flt.get("id"), filter_data=filter_data)
+
+        logger.error("Can't update filter '{filter_name}', filter not found!".format(filter_name=filter_name))
+        return None
+
+    def get_filter_by_name(self, filter_name):
+        """
+        Find shared filter by its name
+
+        Args:
+            filter_name (str): Shared filter name
+
+        Returns:
+             dict: Shared filter details if found, else None
+        """
+        filters = self.get_shared_filters()
+        if filters:
+            filters = yaml.full_load(filters.content)
+            if filters:
+                for flt in filters:
+                    if flt.get("name").lower().strip() == filter_name.lower().strip():
+                        return flt
+        logger.error("No filters found")
+        return None
 
 
 if __name__ == "__main__":
