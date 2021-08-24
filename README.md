@@ -9,11 +9,13 @@ while being able to add more information per test like tags and logs.
 
 ## Installation
 ```bash
-git clone git@github.com:sshveta/migration-qe-reportportal.git
-cd reportportal_cli
-virtualenv rp-cli
-source rp-cli/bin/activate
-pip install -rrequierments.txt
+git clone https://github.com/sshveta/migration-qe-reportportal
+cd migration-qe-reportportal/reportportal_cli
+python3 -m venv  rp_venv
+source ./rp_venv/bin/activate
+pip install -U pip
+pip install jinja2
+pip install -r requierments.txt
 ```
 Modify the rp_conf.yaml:
 ```plain/text
