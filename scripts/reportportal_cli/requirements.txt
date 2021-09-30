@@ -1,6 +1,6 @@
 PyYAML
 requests
 lxml
-reportportal-client~=3.0
+reportportal-client
 xmltodict
 packaging

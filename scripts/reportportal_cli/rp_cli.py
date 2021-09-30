@@ -16,7 +16,7 @@ import shutil
 from collections import OrderedDict
 from mimetypes import guess_type
 
-from reportportal_client import ReportPortalServiceAsync
+from reportportal_client import ReportPortalService
 import urllib3
 urllib3.disable_warnings()
 
@@ -173,7 +173,7 @@ class Migration(Strategy):
         return tags
 
     def should_create_folders_in_launch(self):
-        return True
+        return False
 
     def create_folder(self, case):
         if self.current_team != self._get_team_name(case):
@@ -271,48 +271,6 @@ class Mtv(Migration):
 # END: Class Mtv
 
 
-class MA(Migration):
-
-    # These properties will be attached as a simple (not key:value pair) tag to each test case
-    properties_to_parse = ['rhv_tier']
-
-    @staticmethod
-    def get_testcase_name(case):
-        """Example: cfme/tests/test_rest.py::test_product_info[rhv_cfme_integration]"""
-        file, classname, name = case.get("@file"), case.get("@classname").split(".")[-1], case.get("@name")
-        # If a test case is encapsulated in pytest class, include the class in test case signature
-        if classname.startswith('Test'):
-            return "{}::{}::{}".format(file, classname, name)
-        else:
-            return "{}::{}".format(file, name)
-
-    @staticmethod
-    def get_testcase_description(case):
-        """Include info on skip reason and time it took to execute."""
-        skip_msg = '\n' + case.get('skipped').get('@message') if case.get('skipped') else ''
-        return "Time: {}{}".format(case.get('@time'), skip_msg)
-
-    def get_tags(self, case, test_owners={}):
-        """Only get values of properties we are explicitly interested in."""
-        if test_owners:
-            raise NotImplementedError('Test owners not implemented for CFME.')
-
-        tags = []
-
-        if 'properties' in case.keys():
-            properties = case.get('properties').get('property')
-            if not isinstance(properties, list):
-                properties = [properties]
-            for p in properties:
-                if p.get("@name") in self.properties_to_parse:
-                    tags.append(p.get("@value"))
-
-        return tags
-
-    def should_create_folders_in_launch(self):
-        return False
-
-
 class RpManager:
     def __init__(self, config, strategy):
         self.url = config.get('rp_endpoint')
@@ -342,7 +300,7 @@ class RpManager:
         self.xunit_feed = config.get('xunit_feed')
         self.launch_name = config.get('launch_name', 'rp_cli-launch')
         self.strategy = strategy
-        self.service = ReportPortalServiceAsync(
+        self.service = ReportPortalService(
             endpoint=self.url, project=self.project, token=self.uuid, error_handler=self.strategy.my_error_handler,
             verify_ssl=False, log_batch_size=1
         )
@@ -405,7 +363,7 @@ class RpManager:
     def _end_launch(self):
         self.service.finish_launch(end_time=timestamp())
         self.service.terminate()
-        self.launch_id = self.service.rp_client.launch_id
+        self.launch_id = self.service.launch_id
 
     def _upload_attachment(self, file, name):
         with open(file, "rb") as fh:
@@ -478,8 +436,6 @@ class RpManager:
             item_type="SUITE",
         )
 
-    def _close_folder(self):
-        self.service.finish_test_item(end_time=timestamp(), status=None)
 
     def feed_results(self):
         self._start_launch()
@@ -495,6 +451,13 @@ class RpManager:
             xml = [xml]
 
         xml = sorted(xml, key=lambda k: k['@classname'])
+        parent_test_item_id = self.service.start_test_item(
+            #fixme: parametrize the parent item name
+            name="migration",
+            start_time=timestamp(),
+            item_type="SUITE"
+        )
+
 
         for case in xml:
             issue = None
@@ -511,12 +474,13 @@ class RpManager:
                     self._close_folder()
                     self._open_new_folder(folder_name)
 
-            self.service.start_test_item(
+            test_item_id = self.service.start_test_item(
                 name=name[:255],
                 description=description,
                 tags=tags,
                 start_time=timestamp(),
                 item_type="STEP",
+                parent_item_id=parent_test_item_id
             )
             # Create text log message with INFO level.
             if case.get('system_out'):
@@ -537,7 +501,7 @@ class RpManager:
                     self.attach_logs_to_failed_case(case)
             else:
                 status = 'PASSED'
-            self.service.finish_test_item(end_time=timestamp(), status=status, issue=issue)
+            self.service.finish_test_item(item_id=test_item_id, end_time=timestamp(), status=status)
 
         if self.strategy.should_create_folders_in_launch():
             self._close_folder()
