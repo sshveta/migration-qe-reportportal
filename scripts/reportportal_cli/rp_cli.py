@@ -479,7 +479,7 @@ class RpManager:
         )
 
     def _close_folder(self):
-        self.service.finish_test_item(item_id=test_item_id, end_time=finish_time, status=status)
+        self.service.finish_test_item(item_id=test_item_id, end_time=timestamp(), status=status)
         # self.service.finish_test_item(end_time=timestamp(), status=None)
 
     def feed_results(self):
@@ -546,7 +546,7 @@ class RpManager:
                     self.attach_logs_to_failed_case(case)
             else:
                 status = 'PASSED'
-            self.service.finish_test_item(item_id=test_item_id, end_time=finish_time, status=status)
+            self.service.finish_test_item(item_id=test_item_id, end_time=timestamp(), status=status)
             # self.service.finish_test_item(end_time=timestamp(), status=status, issue=issue)
 
         if self.strategy.should_create_folders_in_launch():
