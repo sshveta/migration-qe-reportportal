@@ -173,7 +173,7 @@ class Migration(Strategy):
         return tags
 
     def should_create_folders_in_launch(self):
-        return True
+        return False
 
     def create_folder(self, case):
         if self.current_team != self._get_team_name(case):
@@ -479,7 +479,8 @@ class RpManager:
         )
 
     def _close_folder(self):
-        self.service.finish_test_item(end_time=timestamp(), status=None)
+        self.service.finish_test_item(item_id=test_item_id, end_time=finish_time, status=status)
+        # self.service.finish_test_item(end_time=timestamp(), status=None)
 
     def feed_results(self):
         self._start_launch()
@@ -495,6 +496,13 @@ class RpManager:
             xml = [xml]
 
         xml = sorted(xml, key=lambda k: k['@classname'])
+        parent_test_item_id = self.service.start_test_item(
+            #fixme: parametrize the parent item name
+            name="migration",
+            start_time=timestamp(),
+            item_type="SUITE"
+        )
+
 
         for case in xml:
             issue = None
@@ -511,12 +519,13 @@ class RpManager:
                     self._close_folder()
                     self._open_new_folder(folder_name)
 
-            self.service.start_test_item(
+            test_item_id = self.service.start_test_item(
                 name=name[:255],
                 description=description,
                 tags=tags,
                 start_time=timestamp(),
                 item_type="STEP",
+                parent_item_id=parent_test_item_id
             )
             # Create text log message with INFO level.
             if case.get('system_out'):
@@ -537,7 +546,8 @@ class RpManager:
                     self.attach_logs_to_failed_case(case)
             else:
                 status = 'PASSED'
-            self.service.finish_test_item(end_time=timestamp(), status=status, issue=issue)
+            self.service.finish_test_item(item_id=test_item_id, end_time=finish_time, status=status)
+            # self.service.finish_test_item(end_time=timestamp(), status=status, issue=issue)
 
         if self.strategy.should_create_folders_in_launch():
             self._close_folder()
