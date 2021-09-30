@@ -16,7 +16,7 @@ import shutil
 from collections import OrderedDict
 from mimetypes import guess_type
 
-from reportportal_client import ReportPortalServiceAsync
+from reportportal_client import ReportPortalService
 import urllib3
 urllib3.disable_warnings()
 
@@ -342,7 +342,7 @@ class RpManager:
         self.xunit_feed = config.get('xunit_feed')
         self.launch_name = config.get('launch_name', 'rp_cli-launch')
         self.strategy = strategy
-        self.service = ReportPortalServiceAsync(
+        self.service = ReportPortalService(
             endpoint=self.url, project=self.project, token=self.uuid, error_handler=self.strategy.my_error_handler,
             verify_ssl=False, log_batch_size=1
         )
