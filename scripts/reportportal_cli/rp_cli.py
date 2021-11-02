@@ -519,7 +519,7 @@ def parse_configuration_file(config):
 
     try:
         with open(config, 'r') as stream:
-            conf_data = yaml.load(stream)
+            conf_data = yaml.load(stream, Loader=yaml.FullLoader)
     except (OSError, IOError) as error:
         logger.error("Failed when opening config file. Error: %s", error)
         sys.exit(1)
