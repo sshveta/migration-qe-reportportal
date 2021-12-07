@@ -396,16 +396,19 @@ class RpManager:
         else:
             logger.warning("There are no logs on the path (%s)!" % (whole_path, ))
 
-    def _log_message_to_rp_console(self, msg, level):
+    def _log_message_to_rp_console(self, msg, level, time=None, item_id=None):
+        if time is None:
+            time = timestamp()
         self.service.log(
-            time=timestamp(),
+            time=time,
             message=msg,
-            level=level
+            level=level,
+            item_id=item_id
         )
 
-    def _process_failed_case(self, case):
+    def _process_failed_case(self, case, item_id):
         msg = self.strategy.extract_failure_msg_from_xunit(case)
-        self._log_message_to_rp_console(msg, "ERROR")
+        self._log_message_to_rp_console(msg, "ERROR", item_id=item_id)
 
     def store_launch_info(self, dest):
         launch_url = self.launch_public_url % self.launch_id
@@ -482,20 +485,26 @@ class RpManager:
                 item_type="STEP",
                 parent_item_id=parent_test_item_id
             )
-            # Create text log message with INFO level.
-            if case.get('system_out'):
-                self._log_message_to_rp_console(case.get('system_out'), "INFO")
 
-            if 'skipped' in case:
-                issue = {"issue_type": "NOT_ISSUE"}  # this will cause skipped test to not be "To Investigate"
-                status = 'SKIPPED'
-                if case.get('skipped'):
-                    self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG")
+            # Create text log message with INFO level.
+            if case.get('system-out'):
+                if isinstance(case.get('system-out'), list):
+                    self._log_message_to_rp_console('\r'.join(case.get('system-out')), "INFO", item_id=test_item_id)
                 else:
-                    self._log_message_to_rp_console('No skip message is provided', "DEBUG")
+                    self._log_message_to_rp_console(case.get('system-out'), "INFO", item_id=test_item_id)
+            if case.get('system-err'):
+                if isinstance(case.get('system-err'), list):
+                    self._log_message_to_rp_console('\r'.join(case.get('system-err')), "ERROR", item_id=test_item_id)
+                else:
+                    self._log_message_to_rp_console(case.get('system-err'), "ERROR", item_id=test_item_id)
+
+            if case.get('skipped'):
+                status = 'SKIPPED'
+                self._log_message_to_rp_console(case.get('skipped').get('@message'), "DEBUG", item_id=test_item_id)
             elif case.get('failure') or case.get('error'):  # Error or failed cases
                 status = 'FAILED'
-                self._process_failed_case(case)
+                self._process_failed_case(case, item_id=test_item_id)
+
 
                 if self.test_logs:
                     self.attach_logs_to_failed_case(case)
